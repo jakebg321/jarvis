@@ -5,6 +5,8 @@ import robot from 'robotjs'
 import { NetworkService } from './network';
 import { exec } from 'child_process';
 
+const network = new NetworkService();
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1200,
@@ -20,6 +22,9 @@ function createWindow() {
         transparent: true, // Glassmorphism support
         alwaysOnTop: false,
     })
+
+    // Give network service access to window for IPC
+    network.setMainWindow(win);
 
     // Maximize on start for borderless fullscreen effect (can still alt-tab)
     win.maximize()
@@ -48,8 +53,6 @@ app.on('window-all-closed', () => {
         app.quit()
     }
 })
-
-const network = new NetworkService();
 
 // App mappings for finger gestures
 const APP_MAPPINGS: Record<string, string> = {

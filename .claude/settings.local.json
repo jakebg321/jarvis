@@ -3,7 +3,10 @@
     "allow": [
       "Bash(tree:*)",
       "Bash(curl:*)",
-      "Bash(npm install)"
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "WebSearch",
+      "WebFetch(domain:developers.google.com)"
     ],
     "deny": [],
     "ask": []

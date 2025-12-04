@@ -44,7 +44,7 @@ export class GestureRecognizer {
             },
             runningMode: this.runningMode,
             numFaces: 1,
-            outputFaceBlendshapes: true,  // Enable facial expressions
+            outputFaceBlendshapes: true,
         });
 
         console.log('HandLandmarker + FaceLandmarker initialized');
@@ -99,66 +99,50 @@ export class GestureRecognizer {
     }
 
     recognizeGesture(landmarks: NormalizedLandmark[]): string {
-        // Finger extension detection using Y position comparison
-        // Tip should be above (lower Y) than the middle knuckle
         const indexIsOpen = landmarks[8].y < landmarks[6].y;
         const middleIsOpen = landmarks[12].y < landmarks[10].y;
         const ringIsOpen = landmarks[16].y < landmarks[14].y;
         const pinkyIsOpen = landmarks[20].y < landmarks[18].y;
 
-        // Thumb detection is trickier - use X distance from palm
-        // For right hand: thumb tip should be left of thumb IP joint
-        // For left hand: thumb tip should be right of thumb IP joint
-        // We'll use absolute distance from wrist as a proxy
         const wristX = landmarks[0].x;
         const thumbTipX = landmarks[4].x;
         const thumbIPX = landmarks[3].x;
         const thumbIsOpen = Math.abs(thumbTipX - wristX) > Math.abs(thumbIPX - wristX);
 
-        // Count open fingers (excluding thumb for finger-count gestures)
         const fingerCount = [indexIsOpen, middleIsOpen, ringIsOpen, pinkyIsOpen].filter(Boolean).length;
 
-        // PEACE SIGN: Index + Middle up, others down ✌️
         if (indexIsOpen && middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
             return 'PEACE_SIGN';
         }
 
-        // THUMBS UP: Only thumb extended, fist closed 👍
         if (thumbIsOpen && !indexIsOpen && !middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
             return 'THUMBS_UP';
         }
 
-        // ROCK ON: Index + Pinky up, others down 🤘
         if (indexIsOpen && !middleIsOpen && !ringIsOpen && pinkyIsOpen) {
             return 'ROCK_ON';
         }
 
-        // OPEN_PALM: All 4 fingers extended (5 with thumb) 🖐️
         if (fingerCount === 4) {
             return 'OPEN_PALM';
         }
 
-        // CLOSED_FIST: All fingers closed ✊
         if (fingerCount === 0 && !thumbIsOpen) {
             return 'CLOSED_FIST';
         }
 
-        // POINTING: Only index up ☝️
         if (indexIsOpen && !middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
             return 'POINTING_UP';
         }
 
-        // THREE_FINGERS: Index + Middle + Ring
         if (indexIsOpen && middleIsOpen && ringIsOpen && !pinkyIsOpen) {
             return 'THREE_FINGERS';
         }
 
-        // FOUR_FINGERS: All except thumb
         if (fingerCount === 4 && !thumbIsOpen) {
             return 'FOUR_FINGERS';
         }
 
-        // Finger count for app launching (1-5)
         if (fingerCount >= 1 && fingerCount <= 4) {
             return `FINGERS_${fingerCount}`;
         }
@@ -166,7 +150,6 @@ export class GestureRecognizer {
         return 'UNKNOWN';
     }
 
-    // Get raw finger states for debugging
     getFingerStates(landmarks: NormalizedLandmark[]): Record<string, boolean> {
         const indexIsOpen = landmarks[8].y < landmarks[6].y;
         const middleIsOpen = landmarks[12].y < landmarks[10].y;

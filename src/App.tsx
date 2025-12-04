@@ -78,6 +78,37 @@ function App() {
   const lastActionTimeRef = useRef(0)
   const ACTION_COOLDOWN_MS = 2000 // Prevent rapid-fire actions
 
+  // Network test state
+  const [networkInfo, setNetworkInfo] = useState<{ hostname: string; ips: string[]; port: number } | null>(null)
+  const [networkMessages, setNetworkMessages] = useState<Array<{ from: string; action: string; ip: string; time: string }>>([])
+  const [showNetworkPanel, setShowNetworkPanel] = useState(true)
+
+  // Network setup
+  useEffect(() => {
+    if (!ipcRenderer) return
+
+    // Get network info
+    ipcRenderer.invoke('network-info').then(setNetworkInfo)
+
+    // Listen for incoming messages
+    const handleMessage = (_event: unknown, data: { from: string; action: string; ip: string }) => {
+      setNetworkMessages(prev => [
+        { ...data, time: new Date().toLocaleTimeString() },
+        ...prev.slice(0, 9) // Keep last 10 messages
+      ])
+    }
+
+    ipcRenderer.on('network-message', handleMessage)
+    return () => {
+      ipcRenderer.removeListener('network-message', handleMessage)
+    }
+  }, [])
+
+  const sendPing = async () => {
+    if (!ipcRenderer) return
+    await ipcRenderer.invoke('network-ping')
+  }
+
   useEffect(() => {
     const init = async () => {
       const rec = new GestureRecognizer()
@@ -97,28 +128,43 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
+  // DRY RUN MODE - show what would happen without executing
+  const DRY_RUN = true
+
   // Execute gesture action
   const executeGestureAction = useCallback(async (gesture: string) => {
     const now = Date.now()
     if (now - lastActionTimeRef.current < ACTION_COOLDOWN_MS) return
 
     const actionConfig = GESTURE_ACTIONS[gesture]
-    if (!actionConfig || !ipcRenderer) return
+    if (!actionConfig) return
 
     lastActionTimeRef.current = now
-    console.log(`Executing action: ${actionConfig.action} - ${actionConfig.label}`)
 
-    try {
+    if (DRY_RUN) {
+      // Just show what would happen
+      console.log(`[DRY RUN] Would execute: ${actionConfig.action} - ${actionConfig.label}`)
       if (actionConfig.action === 'screenshot') {
-        const result = await ipcRenderer.invoke('take-screenshot')
-        setActionFeedback({ label: 'SCREENSHOT CAPTURED', success: result.success })
+        setActionFeedback({ label: 'WOULD: TAKE SCREENSHOT', success: true })
       } else if (actionConfig.action === 'launch' && actionConfig.app) {
-        const result = await ipcRenderer.invoke('launch-app', actionConfig.app)
-        setActionFeedback({ label: `LAUNCHING: ${actionConfig.label}`, success: result.success })
+        setActionFeedback({ label: `WOULD LAUNCH: ${actionConfig.label}`, success: true })
       }
-    } catch (error) {
-      console.error('Action error:', error)
-      setActionFeedback({ label: 'ACTION FAILED', success: false })
+    } else {
+      // Real execution
+      if (!ipcRenderer) return
+      console.log(`Executing action: ${actionConfig.action} - ${actionConfig.label}`)
+      try {
+        if (actionConfig.action === 'screenshot') {
+          const result = await ipcRenderer.invoke('take-screenshot')
+          setActionFeedback({ label: 'SCREENSHOT CAPTURED', success: result.success })
+        } else if (actionConfig.action === 'launch' && actionConfig.app) {
+          const result = await ipcRenderer.invoke('launch-app', actionConfig.app)
+          setActionFeedback({ label: `LAUNCHING: ${actionConfig.label}`, success: result.success })
+        }
+      } catch (error) {
+        console.error('Action error:', error)
+        setActionFeedback({ label: 'ACTION FAILED', success: false })
+      }
     }
 
     // Clear feedback after 1.5 seconds
@@ -472,6 +518,89 @@ function App() {
           </div>
         ))}
       </div>
+
+      {/* Network Test Panel */}
+      {showNetworkPanel && (
+        <div className="absolute bottom-20 right-8 z-50 font-mono text-xs" style={{
+          background: 'rgba(0,0,0,0.9)',
+          padding: '16px',
+          borderRadius: '4px',
+          border: '1px solid #FF00FF60',
+          minWidth: '280px',
+          maxHeight: '300px',
+          boxShadow: '0 0 20px rgba(255, 0, 255, 0.1)',
+        }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+              <span className="text-white font-bold tracking-wider">NETWORK TEST</span>
+            </div>
+            <button
+              onClick={() => setShowNetworkPanel(false)}
+              className="text-gray-500 hover:text-white"
+            >
+              [X]
+            </button>
+          </div>
+
+          {/* This Machine */}
+          <div className="mb-3 pb-2" style={{ borderBottom: '1px solid #FF00FF30' }}>
+            <div className="text-gray-400 text-[10px] mb-1">THIS MACHINE</div>
+            <div className="text-purple-400 font-bold">{networkInfo?.hostname || 'Loading...'}</div>
+            <div className="text-gray-500 text-[10px]">
+              {networkInfo?.ips.join(', ')} : {networkInfo?.port}
+            </div>
+          </div>
+
+          {/* Ping Button */}
+          <button
+            onClick={sendPing}
+            className="w-full mb-3 py-2 px-4 rounded font-bold tracking-wider transition-all"
+            style={{
+              background: 'linear-gradient(90deg, #FF00FF40, #00FFFF40)',
+              border: '1px solid #FF00FF',
+              color: '#FF00FF',
+            }}
+          >
+            SEND PING
+          </button>
+
+          {/* Message Log */}
+          <div className="text-gray-400 text-[10px] mb-2 tracking-widest">INCOMING MESSAGES</div>
+          <div style={{ maxHeight: '120px', overflowY: 'auto' }}>
+            {networkMessages.length === 0 ? (
+              <div className="text-gray-600 text-center py-2">No messages yet...</div>
+            ) : (
+              networkMessages.map((msg, i) => (
+                <div key={i} className="mb-2 pb-2" style={{ borderBottom: '1px solid #333' }}>
+                  <div className="flex justify-between">
+                    <span className="text-purple-400 font-bold">{msg.action}</span>
+                    <span className="text-gray-600">{msg.time}</span>
+                  </div>
+                  <div className="text-gray-500 text-[10px]">
+                    from {msg.from} ({msg.ip})
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Toggle Network Panel Button (when hidden) */}
+      {!showNetworkPanel && (
+        <button
+          onClick={() => setShowNetworkPanel(true)}
+          className="absolute bottom-8 right-8 z-50 font-mono text-xs py-2 px-4 rounded"
+          style={{
+            background: 'rgba(0,0,0,0.8)',
+            border: '1px solid #FF00FF60',
+            color: '#FF00FF',
+          }}
+        >
+          [NETWORK]
+        </button>
+      )}
 
       {/* Interactive Panels */}
       {panels.map(panel => (

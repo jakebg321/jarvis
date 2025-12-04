@@ -7,6 +7,34 @@ const PORT = 41234;
 const MULTICAST_ADDR = '224.0.0.1';
 const MACHINE_NAME = os.hostname();
 
+// Find the best network interface (prefer 192.168.x.x over WSL's 172.x.x.x)
+function getLocalIP(): string {
+    const interfaces = os.networkInterfaces();
+    let fallback = '0.0.0.0';
+
+    for (const name of Object.keys(interfaces)) {
+        // Skip WSL virtual adapters
+        if (name.toLowerCase().includes('wsl') || name.toLowerCase().includes('vethernet')) {
+            continue;
+        }
+        for (const iface of interfaces[name] || []) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                // Prefer 192.168.x.x addresses (typical home network)
+                if (iface.address.startsWith('192.168.')) {
+                    return iface.address;
+                }
+                // Keep as fallback if nothing better
+                if (fallback === '0.0.0.0') {
+                    fallback = iface.address;
+                }
+            }
+        }
+    }
+    return fallback;
+}
+
+const LOCAL_IP = getLocalIP();
+
 export class NetworkService {
     private socket: dgram.Socket;
     private mainWindow: BrowserWindow | null = null;
@@ -22,12 +50,14 @@ export class NetworkService {
     }
 
     setup() {
-        this.socket.bind(PORT, () => {
+        // Bind to the specific interface
+        this.socket.bind(PORT, LOCAL_IP, () => {
             this.socket.setBroadcast(true);
             this.socket.setMulticastTTL(128);
             try {
-                this.socket.addMembership(MULTICAST_ADDR);
-                console.log(`NetworkService listening on ${PORT} as "${MACHINE_NAME}"`);
+                // Specify interface for multicast membership
+                this.socket.addMembership(MULTICAST_ADDR, LOCAL_IP);
+                console.log(`NetworkService listening on ${LOCAL_IP}:${PORT} as "${MACHINE_NAME}"`);
             } catch (e) {
                 console.warn('Multicast membership failed:', e);
             }
@@ -93,7 +123,8 @@ export class NetworkService {
             return {
                 hostname: MACHINE_NAME,
                 ips,
-                port: PORT
+                port: PORT,
+                boundTo: LOCAL_IP  // Show which interface we're actually using
             };
         });
     }

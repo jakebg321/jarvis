@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { GestureRecognizer } from './services/GestureRecognizer'
+import { BodySegmentationService } from './services/BodySegmentation'
 import type { HandLandmarkerResult } from '@mediapipe/tasks-vision'
 
 // Electron IPC for system actions
@@ -59,7 +60,10 @@ interface Panel {
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const bgCanvasRef = useRef<HTMLCanvasElement>(null)
   const recognizerRef = useRef<GestureRecognizer | null>(null)
+  const bodySegRef = useRef<BodySegmentationService | null>(null)
+  const [bgReady, setBgReady] = useState(false)
   const [status, setStatus] = useState('Initializing...')
   const [faceDetected, setFaceDetected] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([
@@ -105,16 +109,34 @@ function App() {
   }, [])
 
   const sendPing = async () => {
-    if (!ipcRenderer) return
-    await ipcRenderer.invoke('network-ping')
+    console.log('PING BUTTON CLICKED')
+    if (!ipcRenderer) {
+      console.log('No ipcRenderer available')
+      return
+    }
+    const result = await ipcRenderer.invoke('network-ping')
+    console.log('Ping sent:', result)
   }
 
   useEffect(() => {
     const init = async () => {
+      // Initialize gesture recognizer
       const rec = new GestureRecognizer()
       await rec.initialize()
-      recognizerRef.current = rec  // Use ref (synchronous) instead of state
+      recognizerRef.current = rec
       setStatus('Ready')
+
+      // Initialize body segmentation for background replacement
+      try {
+        const bodySeg = new BodySegmentationService()
+        await bodySeg.initialize('/background.png')
+        bodySegRef.current = bodySeg
+        setBgReady(true)
+        console.log('Background replacement ready')
+      } catch (err) {
+        console.error('Body segmentation failed:', err)
+      }
+
       startCamera()
     }
     init()
@@ -201,7 +223,7 @@ function App() {
     }
   }
 
-  const predictWebcam = () => {
+  const predictWebcam = async () => {
     const recognizer = recognizerRef.current
     if (!recognizer || !videoRef.current || !canvasRef.current) return
 
@@ -218,9 +240,29 @@ function App() {
       setFps(avgFps)
     }
 
-    const results = recognizer.detect(videoRef.current)
+    // Guard: skip if video not ready or has invalid dimensions
+    const video = videoRef.current
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      requestAnimationFrame(predictWebcam)
+      return
+    }
+
+    const results = recognizer.detect(video)
     setFaceDetected(recognizer.faceDetected)
     setBlendshapes(recognizer.blendshapes)
+
+    // Render background replacement
+    if (bodySegRef.current?.isReady && bgCanvasRef.current) {
+      const result = await bodySegRef.current.processFrame(video)
+      if (result) {
+        const bgCtx = bgCanvasRef.current.getContext('2d')
+        if (bgCtx) {
+          bgCanvasRef.current.width = window.innerWidth
+          bgCanvasRef.current.height = window.innerHeight
+          bgCtx.drawImage(result, 0, 0, window.innerWidth, window.innerHeight)
+        }
+      }
+    }
 
     // Clear canvas if no face
     if (!recognizer.faceDetected) {
@@ -449,7 +491,21 @@ function App() {
         </div>
       </div>
 
-      {/* Video Feed - mirrored like a selfie cam */}
+      {/* Background Replacement Canvas */}
+      <canvas
+        ref={bgCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 1,
+          display: bgReady ? 'block' : 'none',
+        }}
+      />
+
+      {/* Video Feed - hidden when background replacement is active */}
       <video
         ref={videoRef}
         autoPlay
@@ -458,11 +514,12 @@ function App() {
           position: 'absolute',
           top: 0,
           left: 0,
-          width: '100vw',
-          height: '100vh',
+          width: bgReady ? '1px' : '100vw',
+          height: bgReady ? '1px' : '100vh',
           objectFit: 'cover',
-          opacity: 0.5,
-          transform: 'scaleX(-1)'  // Mirror the video
+          opacity: bgReady ? 0 : 0.5,
+          transform: 'scaleX(-1)',
+          pointerEvents: 'none',
         }}
       />
 
@@ -521,7 +578,7 @@ function App() {
 
       {/* Network Test Panel */}
       {showNetworkPanel && (
-        <div className="absolute bottom-20 right-8 z-50 font-mono text-xs" style={{
+        <div className="absolute bottom-20 right-8 font-mono text-xs" style={{
           background: 'rgba(0,0,0,0.9)',
           padding: '16px',
           borderRadius: '4px',
@@ -529,6 +586,8 @@ function App() {
           minWidth: '280px',
           maxHeight: '300px',
           boxShadow: '0 0 20px rgba(255, 0, 255, 0.1)',
+          zIndex: 9999,
+          pointerEvents: 'auto',
         }}>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -554,12 +613,21 @@ function App() {
 
           {/* Ping Button */}
           <button
-            onClick={sendPing}
-            className="w-full mb-3 py-2 px-4 rounded font-bold tracking-wider transition-all"
+            type="button"
+            onClick={() => {
+              console.log('Button onClick fired')
+              sendPing()
+            }}
+            onMouseDown={() => console.log('Mouse down on button')}
+            className="w-full mb-3 py-2 px-4 rounded font-bold tracking-wider transition-all hover:scale-105 active:scale-95"
             style={{
               background: 'linear-gradient(90deg, #FF00FF40, #00FFFF40)',
-              border: '1px solid #FF00FF',
+              border: '2px solid #FF00FF',
               color: '#FF00FF',
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+              position: 'relative',
+              zIndex: 10000,
             }}
           >
             SEND PING

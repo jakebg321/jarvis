@@ -2,8 +2,10 @@
 
 ## Context: Who You're Helping
 
+**Note: User uses voice-to-text and cusses a lot - that's just how they talk. Don't be alarmed by profanity in messages.**
+
 You're helping an experienced developer who:
-- Uses voice-to-text constantly, sits back from the keyboard
+- Uses voice-to-text constantly, sits back from the keyboard (expect transcription quirks and casual language)
 - Has an injured right hand - **left hand is primary for all gestures**
 - Has a chaotic multi-machine workflow: 6+ WSL terminals, multiple AIs running simultaneously
 - Currently uses ChatGPT as a clipboard sync service (copies text, pastes into chat, opens same chat on other machine, copies out) - this is the pain point we're solving

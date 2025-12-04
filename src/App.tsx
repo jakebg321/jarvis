@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { GestureRecognizer } from './services/GestureRecognizer'
 import { BodySegmentationService } from './services/BodySegmentation'
+import { POWER_MODES, POWER_MODE_CONFIGS, getDefaultPowerMode, POWER_MODE_STORAGE_KEY, type PowerMode } from './config/PowerModes'
 import type { HandLandmarkerResult } from '@mediapipe/tasks-vision'
 
 // Electron IPC for system actions
@@ -25,17 +26,11 @@ const GESTURE_ACTIONS: Record<string, { action: string; label: string; app?: str
 
 // Hand landmark connections (21 points)
 const HAND_CONNECTIONS: [number, number][] = [
-  // Thumb
   [0, 1], [1, 2], [2, 3], [3, 4],
-  // Index
   [0, 5], [5, 6], [6, 7], [7, 8],
-  // Middle
   [0, 9], [9, 10], [10, 11], [11, 12],
-  // Ring
   [0, 13], [13, 14], [14, 15], [15, 16],
-  // Pinky
   [0, 17], [17, 18], [18, 19], [19, 20],
-  // Palm
   [5, 9], [9, 13], [13, 17]
 ]
 
@@ -47,7 +42,6 @@ const FINGERTIP_LABELS: { index: number; label: string }[] = [
   { index: 16, label: 'RING' },
   { index: 20, label: 'PINKY' },
 ]
-
 
 interface Panel {
   id: string
@@ -80,25 +74,107 @@ function App() {
   const [scanLinePos, setScanLinePos] = useState(0)
   const [actionFeedback, setActionFeedback] = useState<{ label: string; success: boolean } | null>(null)
   const lastActionTimeRef = useRef(0)
-  const ACTION_COOLDOWN_MS = 2000 // Prevent rapid-fire actions
+  const ACTION_COOLDOWN_MS = 2000
 
   // Network test state
   const [networkInfo, setNetworkInfo] = useState<{ hostname: string; ips: string[]; port: number } | null>(null)
   const [networkMessages, setNetworkMessages] = useState<Array<{ from: string; action: string; ip: string; time: string }>>([])
   const [showNetworkPanel, setShowNetworkPanel] = useState(true)
 
+  // Power mode and overlay state
+  const [powerMode, setPowerMode] = useState<PowerMode>('MEDIUM')
+  const [isOverlayMode, setIsOverlayMode] = useState(false)
+  const [isProcessingPaused, setIsProcessingPaused] = useState(false)
+  const [hostname, setHostname] = useState('')
+
+  // DRY RUN MODE - show what would happen without executing
+  const DRY_RUN = true
+
+  // Power mode initialization
+  useEffect(() => {
+    const initPowerMode = async () => {
+      if (!ipcRenderer) return
+
+      // Get hostname for machine detection
+      const host = await ipcRenderer.invoke('get-hostname')
+      setHostname(host)
+      console.log('Machine hostname:', host)
+
+      // Check localStorage for saved preference
+      const savedMode = localStorage.getItem(POWER_MODE_STORAGE_KEY) as PowerMode | null
+
+      if (savedMode && POWER_MODE_CONFIGS[savedMode]) {
+        console.log('Using saved power mode:', savedMode)
+        setPowerMode(savedMode)
+      } else {
+        // Auto-detect based on machine
+        const defaultMode = getDefaultPowerMode(host)
+        console.log('Auto-detected power mode:', defaultMode, 'for machine:', host)
+        setPowerMode(defaultMode)
+      }
+    }
+
+    initPowerMode()
+  }, [])
+
+  // Listen for IPC events from main process
+  useEffect(() => {
+    if (!ipcRenderer) return
+
+    const handleOverlayChange = (_event: unknown, data: { isOverlay: boolean }) => {
+      console.log('Overlay mode changed:', data.isOverlay)
+      setIsOverlayMode(data.isOverlay)
+    }
+
+    const handleProcessingState = (_event: unknown, data: { paused: boolean }) => {
+      console.log('Processing state changed:', data.paused ? 'PAUSED' : 'RUNNING')
+      setIsProcessingPaused(data.paused)
+    }
+
+    const handleCyclePowerMode = () => {
+      setPowerMode(prev => {
+        const currentIndex = POWER_MODES.indexOf(prev)
+        const nextIndex = (currentIndex + 1) % POWER_MODES.length
+        const nextMode = POWER_MODES[nextIndex]
+        console.log('Cycling power mode:', prev, '->', nextMode)
+        localStorage.setItem(POWER_MODE_STORAGE_KEY, nextMode)
+        return nextMode
+      })
+    }
+
+    ipcRenderer.on('overlay-mode-changed', handleOverlayChange)
+    ipcRenderer.on('processing-state', handleProcessingState)
+    ipcRenderer.on('cycle-power-mode', handleCyclePowerMode)
+
+    return () => {
+      ipcRenderer.removeListener('overlay-mode-changed', handleOverlayChange)
+      ipcRenderer.removeListener('processing-state', handleProcessingState)
+      ipcRenderer.removeListener('cycle-power-mode', handleCyclePowerMode)
+    }
+  }, [])
+
+  // Update body segmentation when power mode changes
+  useEffect(() => {
+    const updateMode = async () => {
+      if (bodySegRef.current) {
+        await bodySegRef.current.setMode(powerMode)
+        setBgReady(bodySegRef.current.isEnabled)
+      }
+      localStorage.setItem(POWER_MODE_STORAGE_KEY, powerMode)
+    }
+    updateMode()
+  }, [powerMode])
+
   // Network setup
   useEffect(() => {
     if (!ipcRenderer) return
 
-    // Get network info
     ipcRenderer.invoke('network-info').then(setNetworkInfo)
 
-    // Listen for incoming messages
     const handleMessage = (_event: unknown, data: { from: string; action: string; ip: string }) => {
       setNetworkMessages(prev => [
         { ...data, time: new Date().toLocaleTimeString() },
-        ...prev.slice(0, 9) // Keep last 10 messages
+        ...prev.slice(0, 9)
       ])
     }
 
@@ -109,15 +185,12 @@ function App() {
   }, [])
 
   const sendPing = async () => {
-    console.log('PING BUTTON CLICKED')
-    if (!ipcRenderer) {
-      console.log('No ipcRenderer available')
-      return
-    }
+    if (!ipcRenderer) return
     const result = await ipcRenderer.invoke('network-ping')
     console.log('Ping sent:', result)
   }
 
+  // Main initialization
   useEffect(() => {
     const init = async () => {
       // Initialize gesture recognizer
@@ -126,13 +199,13 @@ function App() {
       recognizerRef.current = rec
       setStatus('Ready')
 
-      // Initialize body segmentation for background replacement
+      // Initialize body segmentation with current power mode
       try {
         const bodySeg = new BodySegmentationService()
-        await bodySeg.initialize('/background.png')
+        await bodySeg.initialize('/background.png', powerMode)
         bodySegRef.current = bodySeg
-        setBgReady(true)
-        console.log('Background replacement ready')
+        setBgReady(bodySeg.isEnabled)
+        console.log('Background replacement ready, mode:', powerMode)
       } catch (err) {
         console.error('Body segmentation failed:', err)
       }
@@ -150,10 +223,6 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
-  // DRY RUN MODE - show what would happen without executing
-  const DRY_RUN = true
-
-  // Execute gesture action
   const executeGestureAction = useCallback(async (gesture: string) => {
     const now = Date.now()
     if (now - lastActionTimeRef.current < ACTION_COOLDOWN_MS) return
@@ -164,7 +233,6 @@ function App() {
     lastActionTimeRef.current = now
 
     if (DRY_RUN) {
-      // Just show what would happen
       console.log(`[DRY RUN] Would execute: ${actionConfig.action} - ${actionConfig.label}`)
       if (actionConfig.action === 'screenshot') {
         setActionFeedback({ label: 'WOULD: TAKE SCREENSHOT', success: true })
@@ -172,9 +240,7 @@ function App() {
         setActionFeedback({ label: `WOULD LAUNCH: ${actionConfig.label}`, success: true })
       }
     } else {
-      // Real execution
       if (!ipcRenderer) return
-      console.log(`Executing action: ${actionConfig.action} - ${actionConfig.label}`)
       try {
         if (actionConfig.action === 'screenshot') {
           const result = await ipcRenderer.invoke('take-screenshot')
@@ -189,11 +255,9 @@ function App() {
       }
     }
 
-    // Clear feedback after 1.5 seconds
     setTimeout(() => setActionFeedback(null), 1500)
   }, [])
 
-  // Sync canvas size with video dimensions on resize
   useEffect(() => {
     const syncCanvasSize = () => {
       if (videoRef.current && canvasRef.current) {
@@ -213,7 +277,6 @@ function App() {
       })
       videoRef.current.srcObject = stream
       videoRef.current.addEventListener('loadeddata', () => {
-        // Sync canvas to video dimensions
         if (canvasRef.current && videoRef.current) {
           canvasRef.current.width = videoRef.current.videoWidth
           canvasRef.current.height = videoRef.current.videoHeight
@@ -225,12 +288,20 @@ function App() {
 
   const predictWebcam = async () => {
     const recognizer = recognizerRef.current
-    if (!recognizer || !videoRef.current || !canvasRef.current) return
+    if (!recognizer || !videoRef.current || !canvasRef.current) {
+      requestAnimationFrame(predictWebcam)
+      return
+    }
+
+    // Skip processing when paused (minimized)
+    if (isProcessingPaused) {
+      requestAnimationFrame(predictWebcam)
+      return
+    }
 
     // FPS calculation
     const now = performance.now()
     frameTimesRef.current.push(now)
-    // Keep only last 30 frames for averaging
     if (frameTimesRef.current.length > 30) {
       frameTimesRef.current.shift()
     }
@@ -240,7 +311,6 @@ function App() {
       setFps(avgFps)
     }
 
-    // Guard: skip if video not ready or has invalid dimensions
     const video = videoRef.current
     if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
       requestAnimationFrame(predictWebcam)
@@ -251,7 +321,7 @@ function App() {
     setFaceDetected(recognizer.faceDetected)
     setBlendshapes(recognizer.blendshapes)
 
-    // Render background replacement
+    // Render background replacement (if enabled)
     if (bodySegRef.current?.isReady && bgCanvasRef.current) {
       const result = await bodySegRef.current.processFrame(video)
       if (result) {
@@ -264,7 +334,6 @@ function App() {
       }
     }
 
-    // Clear canvas if no face
     if (!recognizer.faceDetected) {
       const canvas = canvasRef.current
       const ctx = canvas?.getContext('2d')
@@ -279,39 +348,37 @@ function App() {
     if (results) {
       drawResults(results)
       if (results.landmarks.length > 0) {
-        const gesture = recognizer.recognizeGestureWithHold(results.landmarks[0]);
-        const landmarks = results.landmarks[0];
+        const gesture = recognizer.recognizeGestureWithHold(results.landmarks[0])
+        const landmarks = results.landmarks[0]
 
-        const handX = (1 - landmarks[0].x) * window.innerWidth;
-        const handY = landmarks[0].y * window.innerHeight;
+        const handX = (1 - landmarks[0].x) * window.innerWidth
+        const handY = landmarks[0].y * window.innerHeight
 
         setCurrentGesture(gesture)
-        setStatus(`Hand: ${Math.round(handX)}, ${Math.round(handY)}`);
+        setStatus(`Hand: ${Math.round(handX)}, ${Math.round(handY)}`)
 
-        // Execute action when gesture confirms and changes
         if (gesture !== lastGestureRef.current && gesture !== 'UNKNOWN') {
           executeGestureAction(gesture)
         }
 
-        // Panel interaction logic
         if (gesture === 'CLOSED_FIST') {
           if (!grabbedPanel) {
             const nearPanel = panels.find(p =>
               Math.abs(p.x - handX) < 80 && Math.abs(p.y - handY) < 50
-            );
+            )
             if (nearPanel) {
-              setGrabbedPanel(nearPanel.id);
+              setGrabbedPanel(nearPanel.id)
             }
           } else {
             setPanels(prev => prev.map(p =>
               p.id === grabbedPanel ? { ...p, x: handX, y: handY } : p
-            ));
+            ))
           }
         } else if (gesture === 'OPEN_PALM' && grabbedPanel) {
-          setGrabbedPanel(null);
+          setGrabbedPanel(null)
         }
 
-        lastGestureRef.current = gesture;
+        lastGestureRef.current = gesture
       }
     }
     requestAnimationFrame(predictWebcam)
@@ -322,25 +389,19 @@ function App() {
     const ctx = canvas?.getContext('2d')
     if (!canvas || !ctx) return
 
-    // Use viewport dimensions (canvas is 100vw x 100vh)
     const w = window.innerWidth
     const h = window.innerHeight
-
-    // Set canvas resolution to match viewport
     canvas.width = w
     canvas.height = h
-
     ctx.clearRect(0, 0, w, h)
 
     if (results.landmarks) {
       for (const landmarks of results.landmarks) {
-        // Convert normalized coords to screen coords (mirror X)
         const points = landmarks.map(lm => ({
           x: (1 - lm.x) * w,
           y: lm.y * h
         }))
 
-        // Draw connections (lines between joints)
         ctx.strokeStyle = '#00FFFF'
         ctx.lineWidth = 3
         for (const [start, end] of HAND_CONNECTIONS) {
@@ -350,7 +411,6 @@ function App() {
           ctx.stroke()
         }
 
-        // Draw landmarks (dots at joints)
         ctx.fillStyle = '#FF00FF'
         for (const point of points) {
           ctx.beginPath()
@@ -358,42 +418,98 @@ function App() {
           ctx.fill()
         }
 
-        // Draw fingertip labels
-        ctx.font = 'bold 12px monospace'
-        ctx.textAlign = 'center'
-        for (const { index, label } of FINGERTIP_LABELS) {
-          const point = points[index]
-          // Label background
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
-          const textWidth = ctx.measureText(label).width
-          ctx.fillRect(point.x - textWidth / 2 - 4, point.y - 28, textWidth + 8, 16)
-          // Label text
-          ctx.fillStyle = '#00FFFF'
-          ctx.fillText(label, point.x, point.y - 16)
-        }
+        // Skip labels in overlay mode for cleaner look
+        if (!isOverlayMode) {
+          ctx.font = 'bold 12px monospace'
+          ctx.textAlign = 'center'
+          for (const { index, label } of FINGERTIP_LABELS) {
+            const point = points[index]
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
+            const textWidth = ctx.measureText(label).width
+            ctx.fillRect(point.x - textWidth / 2 - 4, point.y - 28, textWidth + 8, 16)
+            ctx.fillStyle = '#00FFFF'
+            ctx.fillText(label, point.x, point.y - 16)
+          }
 
-        // Draw wrist label
-        const wrist = points[0]
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
-        const wristText = 'WRIST'
-        const wristWidth = ctx.measureText(wristText).width
-        ctx.fillRect(wrist.x - wristWidth / 2 - 4, wrist.y + 12, wristWidth + 8, 16)
-        ctx.fillStyle = '#FF00FF'
-        ctx.fillText(wristText, wrist.x, wrist.y + 24)
+          const wrist = points[0]
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
+          const wristText = 'WRIST'
+          const wristWidth = ctx.measureText(wristText).width
+          ctx.fillRect(wrist.x - wristWidth / 2 - 4, wrist.y + 12, wristWidth + 8, 16)
+          ctx.fillStyle = '#FF00FF'
+          ctx.fillText(wristText, wrist.x, wrist.y + 24)
+        }
       }
     }
   }
 
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      width: '100vw',
-      height: '100vh',
-      overflow: 'hidden',
-      background: 'rgba(0,0,0,0.8)'
-    }}>
+  // Power Mode Selector Component
+  const PowerModeSelector = () => (
+    <div className="flex items-center gap-2 mt-2">
+      <span className="text-gray-400 text-xs">POWER:</span>
+      <select
+        value={powerMode}
+        onChange={(e) => setPowerMode(e.target.value as PowerMode)}
+        className="bg-black border border-cyan-500 text-cyan-400 text-xs px-2 py-1 rounded cursor-pointer"
+        style={{ outline: 'none' }}
+      >
+        <option value="OFF">OFF</option>
+        <option value="LOW">LOW</option>
+        <option value="MEDIUM">MEDIUM</option>
+        <option value="HIGH">HIGH</option>
+        <option value="ULTRA">ULTRA</option>
+      </select>
+      <span className="text-gray-600 text-[10px]">({hostname})</span>
+    </div>
+  )
+
+  // Overlay HUD - Minimal UI for corner overlay mode
+  const OverlayHUD = () => (
+    <div className="absolute inset-0 flex flex-col" style={{ pointerEvents: 'none' }}>
+      {/* Drag handle at top */}
+      <div
+        className="h-6 w-full flex items-center justify-between px-2"
+        style={{
+          background: 'rgba(0,0,0,0.7)',
+          borderBottom: '1px solid #00FFFF40',
+          pointerEvents: 'auto',
+          // @ts-expect-error webkit property
+          WebkitAppRegion: 'drag',
+          cursor: 'move',
+        }}
+      >
+        <span className="text-cyan-400 text-xs font-mono font-bold">JARVIS</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-gray-500">{powerMode}</span>
+          <div
+            className="w-2 h-2 rounded-full"
+            style={{ background: faceDetected ? '#00FF00' : '#FF0000' }}
+          />
+        </div>
+      </div>
+
+      {/* Status bar at bottom */}
+      <div className="mt-auto">
+        <div
+          className="flex items-center justify-between px-2 py-1"
+          style={{
+            background: 'rgba(0,0,0,0.8)',
+            borderTop: '1px solid #00FFFF40',
+            pointerEvents: 'auto',
+          }}
+        >
+          <span className="text-cyan-400 text-[10px] font-mono font-bold">
+            {currentGesture !== 'UNKNOWN' ? currentGesture : '--'}
+          </span>
+          <span className="text-gray-500 text-[10px]">{fps} FPS</span>
+        </div>
+      </div>
+    </div>
+  )
+
+  // Full HUD - Normal fullscreen UI
+  const FullHUD = () => (
+    <>
       {/* Scan Line Effect */}
       <div
         style={{
@@ -415,22 +531,19 @@ function App() {
         }}
       />
 
-      {/* Corner Brackets - Top Left */}
+      {/* Corner Brackets */}
       <div className="absolute top-4 left-4 z-40" style={{ width: 60, height: 60, pointerEvents: 'none' }}>
         <div style={{ position: 'absolute', top: 0, left: 0, width: 20, height: 3, background: '#00FFFF' }} />
         <div style={{ position: 'absolute', top: 0, left: 0, width: 3, height: 20, background: '#00FFFF' }} />
       </div>
-      {/* Corner Brackets - Top Right */}
       <div className="absolute top-4 right-4 z-40" style={{ width: 60, height: 60, pointerEvents: 'none' }}>
         <div style={{ position: 'absolute', top: 0, right: 0, width: 20, height: 3, background: '#00FFFF' }} />
         <div style={{ position: 'absolute', top: 0, right: 0, width: 3, height: 20, background: '#00FFFF' }} />
       </div>
-      {/* Corner Brackets - Bottom Left */}
       <div className="absolute bottom-4 left-4 z-40" style={{ width: 60, height: 60, pointerEvents: 'none' }}>
         <div style={{ position: 'absolute', bottom: 0, left: 0, width: 20, height: 3, background: '#00FFFF' }} />
         <div style={{ position: 'absolute', bottom: 0, left: 0, width: 3, height: 20, background: '#00FFFF' }} />
       </div>
-      {/* Corner Brackets - Bottom Right */}
       <div className="absolute bottom-4 right-4 z-40" style={{ width: 60, height: 60, pointerEvents: 'none' }}>
         <div style={{ position: 'absolute', bottom: 0, right: 0, width: 20, height: 3, background: '#00FFFF' }} />
         <div style={{ position: 'absolute', bottom: 0, right: 0, width: 3, height: 20, background: '#00FFFF' }} />
@@ -444,8 +557,9 @@ function App() {
         <p className="text-sm opacity-80" style={{ color: faceDetected ? '#00FFFF' : '#666' }}>
           {faceDetected ? status : 'Looking for face...'}
         </p>
+        <PowerModeSelector />
         <p className="text-xs opacity-60 mt-2 text-cyan-400">
-          Hold gesture 300ms to confirm
+          Hold gesture 300ms | F9: Overlay | Ctrl+Shift+P: Cycle power
         </p>
       </div>
 
@@ -454,88 +568,20 @@ function App() {
         <span style={{ color: fps >= 24 ? '#00FF00' : fps >= 15 ? '#FFFF00' : '#FF0000' }}>
           {fps} FPS
         </span>
-        <span className="text-gray-500 ml-2">| MediaPipe Vision</span>
+        <span className="text-gray-500 ml-2">| {powerMode}</span>
       </div>
 
-      {/* Action Feedback Overlay */}
-      {actionFeedback && (
-        <div
-          className="absolute inset-0 z-[100] flex items-center justify-center pointer-events-none"
-          style={{
-            background: actionFeedback.success
-              ? 'rgba(0, 255, 255, 0.1)'
-              : 'rgba(255, 0, 0, 0.1)',
-          }}
-        >
-          <div
-            className="font-mono text-4xl font-bold tracking-widest animate-pulse"
-            style={{
-              color: actionFeedback.success ? '#00FFFF' : '#FF0000',
-              textShadow: `0 0 30px ${actionFeedback.success ? '#00FFFF' : '#FF0000'}`,
-            }}
-          >
-            {actionFeedback.label}
-          </div>
-        </div>
-      )}
-
-      {/* Gesture Guide - Bottom Center */}
+      {/* Gesture Guide */}
       <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-50 font-mono text-[10px] text-gray-500">
         <div className="flex gap-4">
-          <span>✌️ PEACE = Screenshot</span>
-          <span>☝️ POINT = Chrome</span>
-          <span>🤟 3 = VS Code</span>
-          <span>🖖 4 = Slack</span>
-          <span>👍 THUMB = Explorer</span>
-          <span>🤘 ROCK = Terminal</span>
+          <span>PEACE = Screenshot</span>
+          <span>POINT = Chrome</span>
+          <span>3 = VS Code</span>
+          <span>4 = Slack</span>
+          <span>THUMB = Explorer</span>
+          <span>ROCK = Terminal</span>
         </div>
       </div>
-
-      {/* Background Replacement Canvas */}
-      <canvas
-        ref={bgCanvasRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          zIndex: 1,
-          display: bgReady ? 'block' : 'none',
-        }}
-      />
-
-      {/* Video Feed - hidden when background replacement is active */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: bgReady ? '1px' : '100vw',
-          height: bgReady ? '1px' : '100vh',
-          objectFit: 'cover',
-          opacity: bgReady ? 0 : 0.5,
-          transform: 'scaleX(-1)',
-          pointerEvents: 'none',
-        }}
-      />
-
-      {/* Canvas Overlay for Skeleton */}
-      <canvas
-        ref={canvasRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          pointerEvents: 'none',
-          zIndex: 10
-        }}
-      />
 
       {/* Stats Panel */}
       <div className="absolute top-20 right-8 z-50 font-mono text-xs" style={{
@@ -594,15 +640,11 @@ function App() {
               <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
               <span className="text-white font-bold tracking-wider">NETWORK TEST</span>
             </div>
-            <button
-              onClick={() => setShowNetworkPanel(false)}
-              className="text-gray-500 hover:text-white"
-            >
+            <button onClick={() => setShowNetworkPanel(false)} className="text-gray-500 hover:text-white">
               [X]
             </button>
           </div>
 
-          {/* This Machine */}
           <div className="mb-3 pb-2" style={{ borderBottom: '1px solid #FF00FF30' }}>
             <div className="text-gray-400 text-[10px] mb-1">THIS MACHINE</div>
             <div className="text-purple-400 font-bold">{networkInfo?.hostname || 'Loading...'}</div>
@@ -611,14 +653,9 @@ function App() {
             </div>
           </div>
 
-          {/* Ping Button */}
           <button
             type="button"
-            onClick={() => {
-              console.log('Button onClick fired')
-              sendPing()
-            }}
-            onMouseDown={() => console.log('Mouse down on button')}
+            onClick={sendPing}
             className="w-full mb-3 py-2 px-4 rounded font-bold tracking-wider transition-all hover:scale-105 active:scale-95"
             style={{
               background: 'linear-gradient(90deg, #FF00FF40, #00FFFF40)',
@@ -633,7 +670,6 @@ function App() {
             SEND PING
           </button>
 
-          {/* Message Log */}
           <div className="text-gray-400 text-[10px] mb-2 tracking-widest">INCOMING MESSAGES</div>
           <div style={{ maxHeight: '120px', overflowY: 'auto' }}>
             {networkMessages.length === 0 ? (
@@ -655,7 +691,6 @@ function App() {
         </div>
       )}
 
-      {/* Toggle Network Panel Button (when hidden) */}
       {!showNetworkPanel && (
         <button
           onClick={() => setShowNetworkPanel(true)}
@@ -681,12 +716,8 @@ function App() {
             width: 120,
             height: 60,
             border: `2px solid ${panel.color}`,
-            backgroundColor: grabbedPanel === panel.id
-              ? `${panel.color}40`
-              : 'rgba(0,0,0,0.5)',
-            boxShadow: grabbedPanel === panel.id
-              ? `0 0 20px ${panel.color}`
-              : 'none',
+            backgroundColor: grabbedPanel === panel.id ? `${panel.color}40` : 'rgba(0,0,0,0.5)',
+            boxShadow: grabbedPanel === panel.id ? `0 0 20px ${panel.color}` : 'none',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -701,6 +732,89 @@ function App() {
           )}
         </div>
       ))}
+    </>
+  )
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: '100vw',
+      height: '100vh',
+      overflow: 'hidden',
+      background: bgReady ? 'transparent' : 'rgba(0,0,0,0.8)'
+    }}>
+      {/* Video Feed */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          objectFit: 'cover',
+          opacity: bgReady ? 0 : 0.5,
+          transform: 'scaleX(-1)',
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}
+      />
+
+      {/* Background Replacement Canvas */}
+      <canvas
+        ref={bgCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 1,
+          display: bgReady ? 'block' : 'none',
+          pointerEvents: 'none',
+        }}
+      />
+
+      {/* Canvas Overlay for Skeleton */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          pointerEvents: 'none',
+          zIndex: 10
+        }}
+      />
+
+      {/* Action Feedback Overlay */}
+      {actionFeedback && (
+        <div
+          className="absolute inset-0 z-[100] flex items-center justify-center pointer-events-none"
+          style={{
+            background: actionFeedback.success ? 'rgba(0, 255, 255, 0.1)' : 'rgba(255, 0, 0, 0.1)',
+          }}
+        >
+          <div
+            className="font-mono text-4xl font-bold tracking-widest animate-pulse"
+            style={{
+              color: actionFeedback.success ? '#00FFFF' : '#FF0000',
+              textShadow: `0 0 30px ${actionFeedback.success ? '#00FFFF' : '#FF0000'}`,
+            }}
+          >
+            {actionFeedback.label}
+          </div>
+        </div>
+      )}
+
+      {/* Conditional HUD based on overlay mode */}
+      {isOverlayMode ? <OverlayHUD /> : <FullHUD />}
     </div>
   )
 }

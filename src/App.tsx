@@ -76,8 +76,9 @@ function App() {
   })
   const [showSettings, setShowSettings] = useState(false)
 
-  // Command mode state
+  // Command mode state - ref for sync detection, state for display
   const [commandMode, setCommandMode] = useState(false)
+  const commandModeRef = useRef(false)
   const frozenPointerRef = useRef<{ x: number; y: number } | null>(null)
 
   // Display state - updated at throttled rate for UI
@@ -108,7 +109,6 @@ function App() {
   // Refs
   const lastGestureRef = useRef<string>('UNKNOWN')
   const frameTimesRef = useRef<number[]>([])
-  const lastActionTimeRef = useRef(0)
   const smoothedFaceLandmarksRef = useRef<Array<{ x: number; y: number; z: number }> | null>(null)
   const smoothedHandLandmarksRef = useRef<Array<Array<{ x: number; y: number }>> | null>(null)
   const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null)
@@ -116,9 +116,6 @@ function App() {
   const inferenceTimesRef = useRef<number[]>([])
   const lastInferenceTimeRef = useRef(0)
   const smoothingRef = useRef(DEFAULT_SMOOTHING)
-
-  const ACTION_COOLDOWN_MS = 2000
-  const DRY_RUN = true
 
   // Command mode gesture mappings
   const COMMAND_MODE_ACTIONS: Record<string, { label: string; key?: string; action?: string }> = {
@@ -266,13 +263,13 @@ function App() {
       currentGesture: currentGestureRef.current,
       fps: fpsRef.current,
       scanLinePos: scanLinePosRef.current,
-      pointerPos: commandMode ? frozenPointerRef.current : pointerPosRef.current,
+      pointerPos: commandModeRef.current ? frozenPointerRef.current : pointerPosRef.current,
       isPrecisionMode: isPrecisionModeRef.current,
       gpuUsage: gpuUsageRef.current,
-      commandMode: commandMode,
+      commandMode: commandModeRef.current,
       pendingCommand: pendingCommandRef.current,
     })
-  }, [commandMode])
+  }, [])
 
 
   const startCamera = async () => {
@@ -382,15 +379,19 @@ function App() {
 
       currentGestureRef.current = gesture
 
-      // COMMAND MODE LOGIC
-      if (commandMode) {
+      // COMMAND MODE LOGIC - use ref for immediate sync detection
+      console.log('GESTURE:', gesture, 'CMD_MODE_REF:', commandModeRef.current)
+
+      if (commandModeRef.current) {
         // In command mode - check for commands
         const cmdAction = COMMAND_MODE_ACTIONS[gesture]
         if (cmdAction) {
           pendingCommandRef.current = `${cmdAction.label}${cmdAction.key ? ` (${cmdAction.key})` : ''}`
 
           // Handle exit command mode
-          if (gesture === 'POINTING_UP' && gesture !== lastGestureRef.current) {
+          if (gesture === 'POINTING_UP') {
+            console.log('EXITING COMMAND MODE')
+            commandModeRef.current = false
             setCommandMode(false)
             frozenPointerRef.current = null
             pendingCommandRef.current = null
@@ -402,8 +403,11 @@ function App() {
         }
       } else {
         // In AIM mode - check for enter command mode
-        if (gesture === 'OPEN_PALM' && gesture !== lastGestureRef.current) {
+        console.log('AIM MODE - checking for OPEN_PALM, got:', gesture)
+        if (gesture === 'OPEN_PALM') {
+          console.log('ENTERING COMMAND MODE')
           // Enter command mode, freeze pointer
+          commandModeRef.current = true
           setCommandMode(true)
           frozenPointerRef.current = pointerPosRef.current
           pendingCommandRef.current = 'COMMAND MODE'
@@ -416,7 +420,7 @@ function App() {
       lastGestureRef.current = gesture
 
       // Update pointer (only in aim mode)
-      if (!commandMode) {
+      if (!commandModeRef.current) {
         updatePointer(landmarks)
       }
     }
@@ -576,13 +580,16 @@ function App() {
         </p>
       </div>
 
-      {/* FPS & GPU Stats */}
+      {/* FPS & GPU Stats + Gesture Debug */}
       <div className="absolute bottom-8 left-8 font-mono text-xs" style={{ zIndex: Z.HUD }}>
         <div style={{ color: displayState.fps >= 24 ? '#00FF00' : displayState.fps >= 15 ? '#FFFF00' : '#FF0000' }}>
           {displayState.fps} FPS
         </div>
         <div style={{ color: displayState.gpuUsage < 50 ? '#00FF00' : displayState.gpuUsage < 80 ? '#FFFF00' : '#FF0000' }}>
           GPU: {displayState.gpuUsage}% ({Math.round(lastInferenceTimeRef.current)}ms)
+        </div>
+        <div style={{ color: '#FFFF00', marginTop: '8px' }}>
+          GESTURE: {displayState.currentGesture}
         </div>
       </div>
 

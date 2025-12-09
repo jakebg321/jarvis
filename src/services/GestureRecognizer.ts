@@ -124,17 +124,29 @@ export class GestureRecognizer {
     }
 
     recognizeGesture(landmarks: NormalizedLandmark[]): string {
-        const indexIsOpen = landmarks[8].y < landmarks[6].y;
-        const middleIsOpen = landmarks[12].y < landmarks[10].y;
-        const ringIsOpen = landmarks[16].y < landmarks[14].y;
-        const pinkyIsOpen = landmarks[20].y < landmarks[18].y;
+        // Check if fingers are extended - tip should be further from wrist than pip
+        // Using distance from wrist instead of just Y comparison (works for any hand orientation)
+        const wrist = landmarks[0];
 
-        const wristX = landmarks[0].x;
+        const distToWrist = (idx: number) => Math.hypot(landmarks[idx].x - wrist.x, landmarks[idx].y - wrist.y);
+
+        // Finger is "open" if tip is further from wrist than the pip joint
+        const indexIsOpen = distToWrist(8) > distToWrist(6);
+        const middleIsOpen = distToWrist(12) > distToWrist(10);
+        const ringIsOpen = distToWrist(16) > distToWrist(14);
+        const pinkyIsOpen = distToWrist(20) > distToWrist(18);
+
         const thumbTipX = landmarks[4].x;
         const thumbIPX = landmarks[3].x;
-        const thumbIsOpen = Math.abs(thumbTipX - wristX) > Math.abs(thumbIPX - wristX);
+        const thumbIsOpen = Math.abs(thumbTipX - wrist.x) > Math.abs(thumbIPX - wrist.x);
 
         const fingerCount = [indexIsOpen, middleIsOpen, ringIsOpen, pinkyIsOpen].filter(Boolean).length;
+
+        // POINTING_UP first - most important for exiting command mode
+        // Only index extended, others clearly closed
+        if (indexIsOpen && !middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
+            return 'POINTING_UP';
+        }
 
         if (indexIsOpen && middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
             return 'PEACE_SIGN';
@@ -148,20 +160,17 @@ export class GestureRecognizer {
             return 'ROCK_ON';
         }
 
-        if (fingerCount === 4) {
-            return 'OPEN_PALM';
+        if (indexIsOpen && middleIsOpen && ringIsOpen && !pinkyIsOpen) {
+            return 'THREE_FINGERS';
         }
 
         if (fingerCount === 0 && !thumbIsOpen) {
             return 'CLOSED_FIST';
         }
 
-        if (indexIsOpen && !middleIsOpen && !ringIsOpen && !pinkyIsOpen) {
-            return 'POINTING_UP';
-        }
-
-        if (indexIsOpen && middleIsOpen && ringIsOpen && !pinkyIsOpen) {
-            return 'THREE_FINGERS';
+        // OPEN_PALM last - all 4 fingers must be open
+        if (fingerCount === 4) {
+            return 'OPEN_PALM';
         }
 
         if (fingerCount === 4 && !thumbIsOpen) {
@@ -176,14 +185,17 @@ export class GestureRecognizer {
     }
 
     getFingerStates(landmarks: NormalizedLandmark[]): Record<string, boolean> {
-        const indexIsOpen = landmarks[8].y < landmarks[6].y;
-        const middleIsOpen = landmarks[12].y < landmarks[10].y;
-        const ringIsOpen = landmarks[16].y < landmarks[14].y;
-        const pinkyIsOpen = landmarks[20].y < landmarks[18].y;
-        const wristX = landmarks[0].x;
+        const wrist = landmarks[0];
+        const distToWrist = (idx: number) => Math.hypot(landmarks[idx].x - wrist.x, landmarks[idx].y - wrist.y);
+
+        const indexIsOpen = distToWrist(8) > distToWrist(6);
+        const middleIsOpen = distToWrist(12) > distToWrist(10);
+        const ringIsOpen = distToWrist(16) > distToWrist(14);
+        const pinkyIsOpen = distToWrist(20) > distToWrist(18);
+
         const thumbTipX = landmarks[4].x;
         const thumbIPX = landmarks[3].x;
-        const thumbIsOpen = Math.abs(thumbTipX - wristX) > Math.abs(thumbIPX - wristX);
+        const thumbIsOpen = Math.abs(thumbTipX - wrist.x) > Math.abs(thumbIPX - wrist.x);
 
         return {
             thumb: thumbIsOpen,

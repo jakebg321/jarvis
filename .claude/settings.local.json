@@ -6,7 +6,8 @@
       "Bash(npm install)",
       "Bash(npm install:*)",
       "WebSearch",
-      "WebFetch(domain:developers.google.com)"
+      "WebFetch(domain:developers.google.com)",
+      "Bash(npx tsc:*)"
     ],
     "deny": [],
     "ask": []

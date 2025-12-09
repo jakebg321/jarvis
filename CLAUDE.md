@@ -39,12 +39,73 @@ electron/           # Main process (Node.js)
 └── network.ts      # UDP multicast network service for cross-machine communication
 
 src/                # Renderer process (React)
-├── App.tsx         # Main HUD overlay UI, gesture action execution, canvas rendering
+├── App.tsx         # MAIN HUD - This is THE layer for all UI display
 └── services/
     ├── GestureRecognizer.ts   # MediaPipe hand/face detection + gesture classification
     └── BodySegmentation.ts    # TensorFlow.js BodyPix for background replacement
 
 public/models/      # MediaPipe model files (.task)
+```
+
+### App.tsx - THE MAIN HUD LAYER
+
+**This is where all UI elements live. When adding display features, add them here.**
+
+Current HUD elements (all positioned with `position: absolute/fixed`):
+- **Top left:** "JARVIS // ACTIVE/STANDBY" header + status
+- **Top center:** Mode indicator (AIM MODE / COMMAND MODE) + pending command display
+- **Top right:** Settings button + settings panel
+- **Bottom left:** FPS, GPU %, inference time, current gesture debug
+- **Center (floating):** The pointer dot (big red circle in AIM mode)
+- **Background:** Video feed (mirrored) + canvas overlay for hand/face landmarks
+
+Z-Index layers (defined in `Z` const):
+```typescript
+const Z = {
+  VIDEO: 1,
+  CANVAS: 2,
+  SCAN_LINE: 3,
+  PANELS: 10,
+  CORNER_BRACKETS: 20,
+  HUD: 30,
+  STATS_PANEL: 40,
+  NETWORK_PANEL: 40,
+  POINTER: 9999,
+  ACTION_FEEDBACK: 60,
+}
+```
+
+### Dual Mode System
+
+**AIM MODE** (default, green indicator)
+- POINTING_UP (index finger) → moves pointer via RAYCAST projection
+- Force Grip (Palpatine hands, fingers partially curled) → precision/slow mode
+- OPEN_PALM (stop hand, all fingers extended) → enters COMMAND MODE
+
+**COMMAND MODE** (red indicator, pointer frozen)
+- Pointer freezes in place
+- Gestures trigger commands (currently just displays what WOULD happen)
+- POINTING_UP → exits back to AIM MODE
+
+Command mode gesture mappings:
+| Gesture | Command |
+|---------|---------|
+| PEACE_SIGN | Terminal 2 (Alt+2) |
+| THREE_FINGERS | Terminal 3 (Alt+3) |
+| FOUR_FINGERS | Terminal 4 (Alt+4) |
+| THUMBS_UP | Click at pointer |
+| CLOSED_FIST | Enter key |
+| ROCK_ON | Voice input (Win+H) |
+
+### Gesture Detection
+
+**Finger "open" detection:** Uses distance-from-wrist comparison, not Y-axis.
+- Finger is "open" if fingertip is further from wrist than the pip joint
+- Works regardless of hand orientation (flat, vertical, angled)
+
+```typescript
+const distToWrist = (idx) => Math.hypot(landmarks[idx].x - wrist.x, landmarks[idx].y - wrist.y);
+const indexIsOpen = distToWrist(8) > distToWrist(6);  // tip vs pip
 ```
 
 ### Key Concepts
@@ -53,11 +114,9 @@ public/models/      # MediaPipe model files (.task)
 
 **Gesture Hold-to-Confirm:** 300ms hold threshold prevents accidental gesture triggers. Raw gesture must be held stable before it's confirmed.
 
-**DRY_RUN Mode:** Set `DRY_RUN = true` in App.tsx to show what actions would trigger without executing them.
+**Single Hand Mode:** Settings panel lets you pick LEFT or RIGHT hand - only that hand controls the system. Default is RIGHT.
 
-**IPC Communication:** Renderer communicates with main process via `ipcRenderer.invoke()` for system actions (screenshots, app launches, clipboard).
-
-**Network Sync:** UDP multicast on port 41234 for cross-machine communication. Messages are JSON with `{action, from, timestamp}` structure.
+**Performance Optimization:** React state updates are batched at 20fps via `displayState`. High-frequency values (FPS, pointer pos, gesture) stored in refs, only copied to state in throttled `updateDisplay()`.
 
 ### MediaPipe Models
 
@@ -65,19 +124,6 @@ public/models/      # MediaPipe model files (.task)
 - `face_landmarker.task` - 468 face landmarks + 52 blendshapes for expression tracking
 
 Models loaded from `/public/models/` via CDN WASM runtime.
-
-### Recognized Gestures
-
-| Gesture | Fingers | Default Action |
-|---------|---------|----------------|
-| PEACE_SIGN | Index + Middle | Screenshot |
-| POINTING_UP | Index only | Launch Chrome |
-| THREE_FINGERS | Index + Middle + Ring | Launch VS Code |
-| FOUR_FINGERS | All except thumb | Launch Slack |
-| THUMBS_UP | Thumb only | Launch Explorer |
-| ROCK_ON | Index + Pinky | Launch Terminal |
-| CLOSED_FIST | None | Grab/drag panels |
-| OPEN_PALM | All four | Release grabbed panel |
 
 ## Known Issues
 

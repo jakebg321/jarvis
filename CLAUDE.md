@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **User uses voice-to-text and cusses a lot - that's just how they talk. Don't be alarmed by profanity in messages.**
 
 - Uses voice-to-text constantly (expect transcription quirks and casual language)
-- Has injured right hand - **left hand is primary for all gestures**
+- Has injured right hand but **right hand is primary for gestures** (not immobile, just less agile)
 - Multi-machine workflow: multiple WSL terminals, multiple AIs running simultaneously
 - Wants Tony Stark vibes - the cool factor IS the feature
 

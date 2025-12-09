@@ -8,6 +8,9 @@ export class GestureRecognizer {
     private lastVideoTime = -1;
     private _faceDetected = false;
     private _blendshapes: Record<string, number> = {};
+    private _noseLandmark: { x: number; y: number } | null = null;
+    private _faceLandmarks: Array<{ x: number; y: number; z: number }> | null = null;
+    private _lastHandResults: ReturnType<HandLandmarker['detectForVideo']> | null = null;
 
     // Gesture hold tracking for debouncing
     private _currentGesture = 'UNKNOWN';
@@ -21,6 +24,14 @@ export class GestureRecognizer {
 
     get blendshapes() {
         return this._blendshapes;
+    }
+
+    get noseLandmark() {
+        return this._noseLandmark;
+    }
+
+    get faceLandmarks() {
+        return this._faceLandmarks;
     }
 
     async initialize() {
@@ -70,15 +81,29 @@ export class GestureRecognizer {
                 }
             }
 
+            // Extract face landmarks
+            if (faceResults?.faceLandmarks && faceResults.faceLandmarks.length > 0) {
+                const landmarks = faceResults.faceLandmarks[0];
+                this._faceLandmarks = landmarks.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+                // Nose tip is index 1
+                this._noseLandmark = { x: landmarks[1].x, y: landmarks[1].y };
+            } else {
+                this._faceLandmarks = null;
+                this._noseLandmark = null;
+            }
+
             // No face = no hand tracking
             if (!this._faceDetected) {
+                this._lastHandResults = null;
                 return null;
             }
 
             const results = this.handLandmarker.detectForVideo(video, now);
+            this._lastHandResults = results;
             return results;
         }
-        return null;
+        // Return cached results for duplicate frames
+        return this._lastHandResults;
     }
 
     recognizeGestureWithHold(landmarks: NormalizedLandmark[]): string {
